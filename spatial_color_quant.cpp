@@ -149,16 +149,16 @@ class array2d
 {
 public:
     array2d(size_t w, size_t h)
-    : width{w},
-      height{h},
-      data{make_unique<T[]>(w * h)}
+    : data{make_unique<T[]>(w * h)},
+      width{w},
+      height{h}
     {
     }
 
     array2d(const array2d<T>& rhs)
-    : width{rhs.width},
-      height{rhs.height},
-      data{std::make_unique<T[]>(rhs.width * rhs.height)}
+    : data{std::make_unique<T[]>(rhs.width * rhs.height)},
+      width{rhs.width},
+      height{rhs.height}
     {
         for(size_t i=0; i<width; i++) {
             for(size_t j=0; j<height; j++) {
@@ -168,9 +168,9 @@ public:
     }
     
     array2d(array2d<T>&& rhs)
-    : width{rhs.width},
-      height{rhs.height},
-      data{std::move(rhs.data)}
+    : data{std::move(rhs.data)},
+      width{rhs.width},
+      height{rhs.height}
     {
         rhs.width = 0;
         rhs.height = 0;
