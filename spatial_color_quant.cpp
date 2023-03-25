@@ -30,6 +30,7 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include <functional>
 #include <iostream>
 #include <limits>
+#include <memory>
 #include <numeric>
 #include <vector>
 
@@ -44,12 +45,12 @@ public:
         data.fill(T{});
     }
 
-    vector_fixed(const vector_fixed<T, length> &rhs)
+    vector_fixed(const vector_fixed<T, length>& rhs)
     {
         data = rhs.data;
     }
 
-    vector_fixed(const std::vector<T> &rhs)
+    vector_fixed(const std::vector<T>& rhs)
     {
         assert(rhs.size() == length);
         // The original code does a copy_n of length elements, in case that assert gets triggered.
@@ -73,13 +74,13 @@ public:
         return std::inner_product(data.cbegin(), data.cend(), data.cbegin(), T{});
     }
 
-    vector_fixed<T, length>& operator=(const vector_fixed<T, length> &rhs)
+    vector_fixed<T, length>& operator=(const vector_fixed<T, length>& rhs)
     {
         data = rhs.data;
         return *this;
     }
 
-    vector_fixed<T, length> direct_product(const vector_fixed<T, length> &rhs) const {
+    vector_fixed<T, length> direct_product(const vector_fixed<T, length>& rhs) const {
         vector_fixed<T, length> result;
         std::transform(data.cbegin(), data.cend(), rhs.data.cbegin(), result.data.begin(), std::multiplies<>());
         return result;
@@ -112,7 +113,7 @@ public:
     }
 
     vector_fixed<T, length>& operator*=(T scalar) {
-        std::transform(data.cbegin(), data.cend(), data.begin(), [scalar](const T &val) { return val * scalar; });
+        std::transform(data.cbegin(), data.cend(), data.begin(), [scalar](const T val) { return val * scalar; });
         return *this;
     }
 
@@ -123,7 +124,6 @@ public:
     }
 
 private:
-    // T data[length];
     std::array<T, length> data;
 };
 
@@ -148,103 +148,121 @@ template <typename T>
 class array2d
 {
 public:
-    array2d(int width, int height)
+    array2d(size_t w, size_t h)
+    : width{w},
+      height{h},
+      data{make_unique<T[]>(w * h)}
     {
-        this->width = width;
-        this->height = height;
-        data = new T[width * height];
     }
 
     array2d(const array2d<T>& rhs)
+    : width{rhs.width},
+      height{rhs.height},
+      data{std::make_unique<T[]>(rhs.width * rhs.height)}
     {
-        width = rhs.width;
-        height = rhs.height;
-        data = new T[width * height];
-        for(int i=0; i<width; i++) {
-            for(int j=0; j<height; j++) {
+        for(size_t i=0; i<width; i++) {
+            for(size_t j=0; j<height; j++) {
                 (*this)(i,j) = rhs.data[j*width + i];
             }
         }
     }
+    
+    array2d(array2d<T>&& rhs)
+    : width{rhs.width},
+      height{rhs.height},
+      data{std::move(rhs.data)}
+    {
+        rhs.width = 0;
+        rhs.height = 0;
+    }
+    
 
     ~array2d()
     {
-        delete [] data;
     }
 
-    T& operator()(int col, int row)
+    T& operator()(size_t col, size_t row)
     {
-        return data[row*width + col];
+        assert(col < width);
+        assert(row < height);
+        size_t index = row*width + col;
+        return data[index];
+    }
+    
+    const T& operator()(size_t col, size_t row) const
+    {
+        assert(col < width);
+        assert(row < height);
+        size_t index = row*width + col;
+        return data[index];
     }
 
-    int get_width() { return width; }
-    int get_height() { return height; }
+    size_t get_width() const { return width; }
+    size_t get_height() const { return height; }
 
     array2d<T>& operator*=(T scalar) {
-        for(int i=0; i<width; i++) {
-            for(int j=0; j<height; j++) {
-                (*this)(i,j) *= scalar;
-            }
-        }
+        std::transform(data.get(), data.get() + (width * height), data.get(), [scalar](const T val){ return val * scalar; });
         return *this;
     }
 
-    array2d<T> operator*(T scalar) {
+    array2d<T> operator*(T scalar) const {
         array2d<T> result(*this);
         result *= scalar;
         return result;
     }
 
-    vector<T> operator*(vector<T> vec) {
-        vector<T> result;
-        T sum;
-        for(int row=0; row<get_height(); row++) {
-            sum = 0;
-            for(int col=0; col<get_width(); col++) {
-                sum += (*this)(col,row) * vec[col];
-            }
-            result.push_back(sum);
+    // Matrix-vector multiplication... literally
+    std::vector<T> operator*(const std::vector<T>& vec) const {
+        std::vector<T> result;
+        assert(vec.size() == width);
+        result.reserve(vec.size());
+
+        for (size_t row = 0; row < height; row++) {
+            // T sum = 0;
+            // for(int col=0; col<get_width(); col++) {
+            //     sum += (*this)(col,row) * vec[col];
+            // }
+            result.push_back(std::inner_product(&(*this)(0, row), &(*this)(0, row) + width, vec.cbegin(), T{}));
         }
         return result;
     }
 
-    array2d<T>& multiply_row_scalar(int row, double mult) {
-        for(int i=0; i<get_width(); i++) {
-            (*this)(i,row) *= mult;
-        }
+    array2d<T>& multiply_row_scalar(size_t row, double mult) {
+        T* row_iter = &(*this)(0, row);
+        std::transform(row_iter, row_iter + width, row_iter, [mult](const T val){ return val * mult; });
         return *this;
     }
 
-    array2d<T>& add_row_multiple(int from_row, int to_row, double mult) {
-        for(int i=0; i<get_width(); i++) {
-            (*this)(i,to_row) += mult*(*this)(i,from_row);
-        }
+    array2d<T>& add_row_multiple(size_t from_row, size_t to_row, double mult) {
+        const T* from_row_iter = &(*this)(0, from_row);
+        T* to_row_iter = &(*this)(0, to_row);
+        std::transform(from_row_iter, from_row_iter + width, to_row_iter, to_row_iter, [mult](const T val1, const T val2){ return val1 * mult + val2; });
         return *this;
     }
 
     // We use simple Gaussian elimination - perf doesn't matter since
     // the matrices will be K x K, where K = number of palette entries.
     array2d<T> matrix_inverse() {
-        array2d<T> result(get_width(), get_height());
+        array2d<T> result(width, height);
         array2d<T>& a = *this;
 
         // Set result to identity matrix
-        result *= 0;
-        for(int i=0; i<get_width(); i++) {
+        std::fill(result.data.get(), result.data.get() + (width * height), 0.0);
+        for(size_t i=0; i<width; i++) {
             result(i,i) = 1;
         }
         // Reduce to echelon form, mirroring in result
-        for(int i=0; i<get_width(); i++) {
+        for(size_t i=0; i<get_width(); i++) {
             result.multiply_row_scalar(i, 1/a(i,i));
             multiply_row_scalar(i, 1/a(i,i));
-            for(int j=i+1; j<get_height(); j++) {
+            for(size_t j=i+1; j<get_height(); j++) {
                 result.add_row_multiple(i, j, -a(i,j));
                 add_row_multiple(i, j, -a(i,j));
             }
         }
         // Back substitute, mirroring in result
-        for(int i=get_width()-1; i>=0; i--) {
-            for(int j=i-1; j>=0; j--) {
+        for(size_t i=get_width()-1; i != std::numeric_limits<size_t>::max(); i--) {
+            for(int j=i-1; j != std::numeric_limits<size_t>::max(); j--) {
                 result.add_row_multiple(i, j, -a(i,j));
                 add_row_multiple(i, j, -a(i,j));
             }
@@ -254,18 +272,18 @@ public:
     }
 
 private:
-    T* data;
-    int width, height;
+    std::unique_ptr<T[]> data;
+    size_t width, height;
 };
 
 template <typename T>
-array2d<T> operator*(T scalar, array2d<T> a) {
+array2d<T> operator*(T scalar, const array2d<T>& a) {
     return a*scalar;
 }
 
 
 template <typename T>
-ostream& operator<<(ostream& out, array2d<T>& a) {
+ostream& operator<<(ostream& out, const array2d<T>& a) {
     out << "(";
     int i, j;
     for (j=0; j<a.get_height(); j++) {
@@ -568,27 +586,27 @@ void compute_initial_s(array2d< vector_fixed<double,3> >& s,
                        array3d<double>& coarse_variables,
                        array2d< vector_fixed<double, 3> >& b)
 {
-    int palette_size  = s.get_width();
-    int coarse_width  = coarse_variables.get_width();
-    int coarse_height = coarse_variables.get_height();
-    int center_x = (b.get_width()-1)/2, center_y = (b.get_height()-1)/2;
+    size_t palette_size  = s.get_width();
+    size_t coarse_width  = coarse_variables.get_width();
+    size_t coarse_height = coarse_variables.get_height();
+    size_t center_x = (b.get_width()-1)/2, center_y = (b.get_height()-1)/2;
     vector_fixed<double,3> center_b = b_value(b,0,0,0,0);
     vector_fixed<double,3> zero_vector;
-    for (int v=0; v<palette_size; v++) {
-        for (int alpha=v; alpha<palette_size; alpha++) {
+    for (size_t v=0; v<palette_size; v++) {
+        for (size_t alpha=v; alpha<palette_size; alpha++) {
             s(v,alpha) = zero_vector;
         }
     }
-    for (int i_y=0; i_y<coarse_height; i_y++) {
-        for (int i_x=0; i_x<coarse_width; i_x++) {
-            int max_j_x = min(coarse_width,  i_x - center_x + b.get_width());
-            int max_j_y = min(coarse_height, i_y - center_y + b.get_height());
-            for (int j_y=max(0, i_y - center_y); j_y<max_j_y; j_y++) {
-                for (int j_x=max(0, i_x - center_x); j_x<max_j_x; j_x++) {
+    for (size_t i_y=0; i_y<coarse_height; i_y++) {
+        for (size_t i_x=0; i_x<coarse_width; i_x++) {
+            size_t max_j_x = min(coarse_width,  i_x - center_x + b.get_width());
+            size_t max_j_y = min(coarse_height, i_y - center_y + b.get_height());
+            for (size_t j_y=(i_y >= center_y ? i_y - center_y : 0); j_y<max_j_y; j_y++) {
+                for (size_t j_x=(i_x >= center_x ? i_x - center_x : 0); j_x<max_j_x; j_x++) {
                     if (i_x == j_x && i_y == j_y) continue;
                     vector_fixed<double,3> b_ij = b_value(b,i_x,i_y,j_x,j_y);
-                    for (int v=0; v<palette_size; v++) {
-                        for (int alpha=v; alpha<palette_size; alpha++) {
+                    for (size_t v=0; v<palette_size; v++) {
+                        for (size_t alpha=v; alpha<palette_size; alpha++) {
                             double mult = coarse_variables(i_x,i_y,v)*
                                           coarse_variables(j_x,j_y,alpha);
                             s(v,alpha)(0) += mult * b_ij(0);
@@ -598,7 +616,7 @@ void compute_initial_s(array2d< vector_fixed<double,3> >& s,
                     }
                 }
             }            
-            for (int v=0; v<palette_size; v++) {
+            for (size_t v=0; v<palette_size; v++) {
                 s(v,v) += coarse_variables(i_x,i_y,v)*center_b;
             }
         }
@@ -733,17 +751,17 @@ void spatial_color_quant(array2d< vector_fixed<double, 3> >& image,
     int coarse_level;
     for(coarse_level=1; coarse_level <= max_coarse_level; coarse_level++)
     {
-        int radius_width  = (filter_weights.get_width() - 1)/2,
+        size_t radius_width  = (filter_weights.get_width() - 1)/2,
             radius_height = (filter_weights.get_height() - 1)/2;
         array2d< vector_fixed<double, 3> >
-            bi(max(3, b_vec.back().get_width()-2),
-               max(3, b_vec.back().get_height()-2));
-        for(int J_y=0; J_y<bi.get_height(); J_y++) {
-            for(int J_x=0; J_x<bi.get_width(); J_x++) {
-                for(int i_y=radius_height*2; i_y<radius_height*2+2; i_y++) {
-                    for(int i_x=radius_width*2; i_x<radius_width*2+2; i_x++) {
-                        for(int j_y=J_y*2; j_y<J_y*2+2; j_y++) {
-                            for(int j_x=J_x*2; j_x<J_x*2+2; j_x++) {
+            bi(max(static_cast<size_t>(3), b_vec.back().get_width()-2),
+               max(static_cast<size_t>(3), b_vec.back().get_height()-2));
+        for(size_t J_y=0; J_y<bi.get_height(); J_y++) {
+            for(size_t J_x=0; J_x<bi.get_width(); J_x++) {
+                for(size_t i_y=radius_height*2; i_y<radius_height*2+2; i_y++) {
+                    for(size_t i_x=radius_width*2; i_x<radius_width*2+2; i_x++) {
+                        for(size_t j_y=J_y*2; j_y<J_y*2+2; j_y++) {
+                            for(size_t j_x=J_x*2; j_x<J_x*2+2; j_x++) {
                                 bi(J_x,J_y) += b_value(b_vec.back(), i_x, i_y, j_x, j_y);
                             }
                         }
@@ -783,7 +801,7 @@ void spatial_color_quant(array2d< vector_fixed<double, 3> >& image,
 #if TRACE
         cout << "Temperature: " << temperature << endl;
 #endif
-        int center_x = (b.get_width()-1)/2, center_y = (b.get_height()-1)/2;
+        size_t center_x = (b.get_width()-1)/2, center_y = (b.get_height()-1)/2;
         int step_counter = 0;
         for(int repeat=0; repeat<repeats_per_temp; repeat++)
         {
@@ -845,7 +863,7 @@ void spatial_color_quant(array2d< vector_fixed<double, 3> >& image,
                     exit(-1);
                 }
                 int old_max_v = best_match_color(coarse_variables, i_x, i_y, palette);
-                vector_fixed<double,3> & j_pal = (*j_palette_sum)(i_x,i_y);
+                vector_fixed<double,3>& j_pal = (*j_palette_sum)(i_x,i_y);
                 for (unsigned int v=0; v < palette.size(); v++) {
                     double new_val = meanfields[v]/meanfield_sum;
                     // Prevent the matrix S from becoming singular
@@ -871,8 +889,8 @@ void spatial_color_quant(array2d< vector_fixed<double, 3> >& image,
                     // The commented out loops are faster but cause a little bit of distortion
                     //for (int y=center_y-1; y<center_y+1; y++) {
                     //   for (int x=center_x-1; x<center_x+1; x++) {
-                    for (int y=min(1,center_y-1); y<max(b.get_height()-1,center_y+1); y++) {
-                        for (int x=min(1,center_x-1); x<max(b.get_width()-1,center_x+1); x++) {
+                    for (int y=min(static_cast<size_t>(1),center_y-1); y<max(b.get_height()-1,center_y+1); y++) {
+                        for (int x=min(static_cast<size_t>(1),center_x-1); x<max(b.get_width()-1,center_x+1); x++) {
                             int j_x = x - center_x + i_x, j_y = y - center_y + i_y;
                             if (j_x < 0 || j_y < 0 || j_x >= coarse_variables.get_width() || j_y >= coarse_variables.get_height()) continue;
                             visit_queue.push_back(pair<int,int>(j_x,j_y));
@@ -947,8 +965,8 @@ void spatial_color_quant(array2d< vector_fixed<double, 3> >& image,
     // Need to reseat this reference in case we changed p_coarse_variables
     array3d<double>& coarse_variables = *p_coarse_variables;
 
-    for(int i_x = 0; i_x < image.get_width(); i_x++) {
-        for(int i_y = 0; i_y < image.get_height(); i_y++) {
+    for(size_t i_x = 0; i_x < image.get_width(); i_x++) {
+        for(size_t i_y = 0; i_y < image.get_height(); i_y++) {
             quantized_image(i_x,i_y) =
                 best_match_color(coarse_variables, i_x, i_y, palette);
         }
