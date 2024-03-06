@@ -108,5 +108,53 @@ class GaussianBlurKernelInitializer(keras.initializers.Initializer):
         repr_3d = keras.ops.stack(in_channels, axis=2)
         return repr_3d
 
+class Clip01Constraint(keras.constraints.Constraint):
+    def __call__(self, w):
+        return keras.ops.clip(w, 0., 1.)
+
 initializer = GaussianBlurKernelInitializer((1.0, 0.3))
 print(initializer((5, 5, 3, 2)))
+
+
+class EdgePadding2D(keras.layers.Layer):
+    def __init__(self, padding: (int, int)):
+        super().__init__()
+        self.symmetric_height_pad = padding[0]
+        self.symmetric_width_pad = padding[1]
+
+    def call(self, inputs):
+        # Use 'symmetric' mode several times for better backend support: https://stackoverflow.com/a/50175380
+        vertical_padding_added = 0
+        horizontal_padding_added = 0
+        while vertical_padding_added < self.symmetric_height_pad and \
+                horizontal_padding_added < self.symmetric_width_pad:
+            vpad = min(self.symmetric_height_pad - vertical_padding_added, vertical_padding_added + 1)
+            hpad = min(self.symmetric_width_pad - horizontal_padding_added, horizontal_padding_added + 1)
+            inputs = keras.ops.pad(inputs, ((0,0), (vpad, vpad), (hpad, hpad), (0,0)), mode='symmetric')
+        return inputs
+
+
+
+# Input: int tensor with dimensions [batch size, width, height, color channels]
+# Output: float tensor with dimensions [batch size] describing loss values???
+
+# Sequence:
+# * Convert from palette indices to the raw color values
+palette_4bpp = keras.layers.Embedding(16, 3, embeddings_constraint=Clip01Constraint)
+# Pad with same color at the edges
+edge_paddig = EdgePadding2D((1, 1))
+# Apply a blur
+blur = keras.layers.DepthwiseConv2D((3, 3), padding='valid', data_format='channels_last', use_bias=False, depthwise_initializer=GaussianBlurKernelInitializer, trainable=False)
+# Convert to a perceptually uniform color space (UCS)
+to_ucs = LinearSrgbToOklab()
+# Diff with original image in Oklab
+
+
+
+# Now, how to decide what numbers to put in the 4bpp image? Do what the paper did, deterministic annealing.
+# (Without all of their optimizations to save work in the sequential code, though.
+#  We can compute in parallel.)
+# Problem: the paper gives the actual computations, using "b" values that seem to represent the contribution
+# of each pixel/color channel to the final value. But these b values depend on the perception model!
+# So now we need to understand the purpose behind the computations, in order to know what value to sub in
+# for b to calculate the old/new value of m_iv for each color.
