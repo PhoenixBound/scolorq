@@ -4,6 +4,22 @@ import keras
 import numpy as np
 import tensorflow as tf
 
+def gumbel_softmax(logits, tau, hard):
+    # Sample Gumbel(0, 1) distribution to get random noise
+    u = keras.random.uniform(keras.ops.shape(logits))
+    g = keras.ops.stop_gradient(-keras.ops.log(-keras.ops.log(u)))
+    # Add noise to the log probabilities and softmax it
+    x = (keras.ops.log(logits) + g) / tau
+    result = keras.ops.softmax(x)
+    
+    if hard:
+        # Assuming channels-last order
+        max_indices = keras.ops.argmax(result, axis=-1)
+        result_hard = keras.ops.one_hot(max_indices)
+        # And add the gradients, using the trick mentioned in PyTorch's docs
+        return result_hard - keras.ops.stop_gradient(result) + result
+    else:
+        return result
 
 def srgb_to_linear(img):
     simple_mask = img <= 0.04045
@@ -42,7 +58,7 @@ class LinearSrgbToOklab(keras.layers.Layer):
         # XXX: keras doesn't have a cube root operation
         x = tf.experimental.numpy.cbrt(x)
         x = keras.ops.conv(x, lms_to_oklab)
-        return x
+        return xSomething to note, the final rescue will be available on the 15th, its recommended that you do it ASAP and other Liz Requests as soon as you can, so you can prepare to do the secret boss of this game (they made it so that the boss does not require New Game Plus to do, unlike in the original/FES)
 
 def test_srgb_to_oklab():
     test_colors = keras.ops.convert_to_tensor([[
@@ -135,11 +151,16 @@ class EdgePadding2D(keras.layers.Layer):
 
 
 
-# Input: int tensor with dimensions [batch size, width, height, color channels]
-# Output: float tensor with dimensions [batch size] describing loss values???
+# Input: float tensor with dimensions [batch size, width, height, number of colors in palette]
+#        This tensor represents the probability of each color being used for a part of the image.
+# Output: float tensor with dimensions [batch size] describing loss values
+#         This tensor represents how far off the image is.
 
 # Sequence:
-# * Convert from palette indices to the raw color values
+# * Take gumbel softmax of input tensor
+
+# * Convert from (reparameterized) "one-hot encoded" palette indices to the raw color values
+#   When tau = 0 for the gumbel softmax, this is equivalent to choosing a color from the palette.
 palette_4bpp = keras.layers.Embedding(16, 3, embeddings_constraint=Clip01Constraint)
 # Pad with same color at the edges
 edge_paddig = EdgePadding2D((1, 1))
@@ -150,11 +171,3 @@ to_ucs = LinearSrgbToOklab()
 # Diff with original image in Oklab
 
 
-
-# Now, how to decide what numbers to put in the 4bpp image? Do what the paper did, deterministic annealing.
-# (Without all of their optimizations to save work in the sequential code, though.
-#  We can compute in parallel.)
-# Problem: the paper gives the actual computations, using "b" values that seem to represent the contribution
-# of each pixel/color channel to the final value. But these b values depend on the perception model!
-# So now we need to understand the purpose behind the computations, in order to know what value to sub in
-# for b to calculate the old/new value of m_iv for each color.
