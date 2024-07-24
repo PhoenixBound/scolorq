@@ -21,6 +21,21 @@ def gumbel_softmax(logits, tau, hard):
     else:
         return result
 
+class GumbelSoftmaxLayer(keras.layers.Layer):
+    def __init__(self, hard=False):
+        super().__init__()
+        self.hard = hard
+
+    def get_config(self):
+        return { 'hard': self.hard }
+
+    def call(self, inputs, temp, training=None):
+        if training:
+            return gumbel_softmax(inputs, temp, self.hard)
+        else:
+            # Uh... kinda weird to keep using the random noise and temp, isn't it?
+            return gumbel_softmax(inputs, temp, True)
+
 def srgb_to_linear(img):
     simple_mask = img <= 0.04045
     complex_mask = 1.0 - img
@@ -51,14 +66,13 @@ lms_to_oklab = keras.ops.stop_gradient(lms_to_oklab)
 class LinearSrgbToOklab(keras.layers.Layer):
     def __init__(self):
         super().__init__()
-        
     
     def call(self, inputs):
         x = keras.ops.conv(inputs, linear_rgb_to_lms)
         # XXX: keras doesn't have a cube root operation
         x = tf.experimental.numpy.cbrt(x)
         x = keras.ops.conv(x, lms_to_oklab)
-        return xSomething to note, the final rescue will be available on the 15th, its recommended that you do it ASAP and other Liz Requests as soon as you can, so you can prepare to do the secret boss of this game (they made it so that the boss does not require New Game Plus to do, unlike in the original/FES)
+        return x
 
 def test_srgb_to_oklab():
     test_colors = keras.ops.convert_to_tensor([[
@@ -95,7 +109,7 @@ class GaussianBlurKernelInitializer(keras.initializers.Initializer):
     
     def __call__(self, shape, dtype=None):
         # The desired shape is  [kernel_spatial_shape, num_input_channels, num_channels_multiplier]
-        
+        keras.ops.pad(full_color, (1, 1), mode='reflect')
         stddevs = keras.ops.convert_to_tensor(self.stddevs, dtype=dtype)
         assert keras.ops.ndim(stddevs) <= 1
         stddevs = keras.ops.reshape(stddevs, (-1,))
@@ -149,25 +163,47 @@ class EdgePadding2D(keras.layers.Layer):
             inputs = keras.ops.pad(inputs, ((0,0), (vpad, vpad), (hpad, hpad), (0,0)), mode='symmetric')
         return inputs
 
+# ...You know what, on second thought, edge padding adds too much important to colors at
+# the edge for no reason. Let's use a simpler form of padding.
+class ReflectPadding2D(keras.layers.Layer):
+    def __init__(self, padding):
+        super().__init__()
+        self.padding = padding
+    
+    def get_config(self):
+        return { 'padding': self.padding }
 
+    def call(self, inputs):
+        return keras.ops.pad(inputs, self.padding, mode='reflect')
 
-# Input: float tensor with dimensions [batch size, width, height, number of colors in palette]
-#        This tensor represents the probability of each color being used for a part of the image.
-# Output: float tensor with dimensions [batch size] describing loss values
-#         This tensor represents how far off the image is.
+def get_model():
+    # Input: float tensor with dimensions [batch size, width, height, number of colors in palette]
+    #        This tensor represents the probability of each color being used for a part of the image.
+    # Output: float tensor with dimensions [batch size] describing loss values
+    #         This tensor represents how far off the image is.
+    # Sequence:
+    # * Take gumbel softmax of input tensor
+    gumbel_softmax_layer = GumbelSoftmaxLayer()
+    # * Convert from (reparameterized) "one-hot encoded" palette indices to the raw color values
+    #   When tau = 0 for the gumbel softmax, this is equivalent to choosing a color from the palette.
+    # palette_4bpp = keras.layers.Embedding(16, 3, embeddings_constraint=Clip01Constraint)
+    palette_applier = keras.layers.Dense(3, activation=None, use_bias=False)
+    # Pad with same color at the edges
+    edge_padding = EdgePadding2D((1, 1))
+    # Apply a blur
+    blur = keras.layers.DepthwiseConv2D((3, 3), padding='valid', data_format='channels_last', use_bias=False, depthwise_initializer=GaussianBlurKernelInitializer((0.3, 0.3)), trainable=False)
+    # Convert to a perceptually uniform color space (UCS)
+    to_ucs = LinearSrgbToOklab()
+    # Diff with original image in Oklab
 
-# Sequence:
-# * Take gumbel softmax of input tensor
-
-# * Convert from (reparameterized) "one-hot encoded" palette indices to the raw color values
-#   When tau = 0 for the gumbel softmax, this is equivalent to choosing a color from the palette.
-palette_4bpp = keras.layers.Embedding(16, 3, embeddings_constraint=Clip01Constraint)
-# Pad with same color at the edges
-edge_paddig = EdgePadding2D((1, 1))
-# Apply a blur
-blur = keras.layers.DepthwiseConv2D((3, 3), padding='valid', data_format='channels_last', use_bias=False, depthwise_initializer=GaussianBlurKernelInitializer, trainable=False)
-# Convert to a perceptually uniform color space (UCS)
-to_ucs = LinearSrgbToOklab()
-# Diff with original image in Oklab
-
+def infer(img_weights, palette_layer, t):
+    gsm = gumbel_softmax_layer(img_weights, tau=t)
+    full_color = palette_layer(gsm)
+    # ...Meh. Reflect padding is probably better anyway, so let's just do that
+    # padded = edge_padding(full_color)
+    padded = keras.ops.pad(full_color, (1, 1), mode='reflect')
+    blurred = blur(padded)
+    perceived = to_ucs(blurred)
+    return perceived
+    
 
